@@ -4,10 +4,12 @@
 // request), and the program hands it in. It copies game/ and screenshots/ from
 // beside this file to /output and writes /output/dossier.json, the summary the
 // judge reads, with the vendored make.fun library. Neon Bay is a sunset coastal
-// city: drive and steal cars, outrun the police, run six story missions for Mara
+// city: drive and steal cars, outrun the police, run eight story missions for Mara
 // Voss, and clear a $1,500 debt — all drawn on canvas with synthesized sound.
-// Put your 3 or 4 PNG or JPEG screenshots in screenshots/ (the first by name is
-// the cover) and run it.
+// Free roam adds taxi fares and neon tokens to collect; at five stars a police
+// helicopter circles overhead and roadblocks cut the streets. Put your 3 or 4
+// PNG or JPEG screenshots in screenshots/ (the first by name is the cover) and
+// run it.
 //
 // Serve it locally with `node serve.ts`, then open http://localhost:8080.
 // Outside the grader's container, MAKEFUN_OUTPUT_DIR stands in for /output:

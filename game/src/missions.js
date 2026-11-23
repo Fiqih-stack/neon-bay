@@ -1,15 +1,16 @@
 // Neon Bay story and missions. Jax Rook, a courier who owes the Tide crew, takes
-// jobs from Mara Voss, a fixer who runs the bay's night trade. Six jobs, in order:
-// a delivery, a stolen car, a police chase, a deal gone loud, a timed getaway, and
-// the big score. Each mission sets a target, watches one rule, and pays on completion.
+// jobs from Mara Voss, a fixer who runs the bay's night trade. Eight jobs, in order:
+// a delivery, a stolen car, a police chase, a deal gone loud, a timed getaway, the
+// bank job, a taxi fare across town, and the final stand against the Tide crew.
+// Each mission sets a target, watches one rule, and pays on completion.
 
-import { WANTED, dist2 } from './config.js';
+import { WANTED, TAXI, dist2 } from './config.js';
 import { spawnThug } from './ai.js';
 
 export const STORY_INTRO = [
   'NEON BAY — 9:04 PM. The sun is down and the bay is lit.',
   'Jax Rook owes the Tide crew $1,500. Mara Voss has the jobs to clear it.',
-  'Walk with WASD. Enter a car with E. Aim with the mouse, shoot with click.',
+  'Eight jobs. Walk with WASD. Enter a car with E. Aim with the mouse, shoot with click.',
 ];
 
 const CHECKPOINTS = [
@@ -114,7 +115,7 @@ export const MISSIONS = [
       return false;
     },
     reward: 600,
-    doneLine: 'MARA: The case is ours. $600. One last job and you are free.',
+    doneLine: 'MARA: The case is ours. $600. Four jobs left — the Tide is not done with you yet.',
   },
   {
     title: 'Night Run',
@@ -156,7 +157,7 @@ export const MISSIONS = [
       state.mission.phase = 0;
       setTarget(state, state.city.bank.x, state.city.bank.y, 'Reach the Bayfront Bank');
       setDialog(state, [
-        'MARA: Last job. The Bayfront Bank, then the safehouse. $1,500 clears your debt.',
+        'MARA: The Bayfront Bank, then two more jobs before you are free.',
         'Grab the cash, and run — the whole city will be on you.',
       ]);
     },
@@ -186,7 +187,103 @@ export const MISSIONS = [
       if (dist2(p.x, p.y, state.mission.target.x, state.mission.target.y) < 90 * 90) return true;
       return false;
     },
-    reward: 1500,
+    reward: 700,
+    doneLine: 'MARA: $700 from the bank. Two jobs left, Rook — and the Tide is done waiting.',
+  },
+  {
+    title: 'Fare Game',
+    setup(state) {
+      state.mission.phase = 0;
+      // A fare waits by the casino; the taxi system runs the pickup and the ride.
+      const pickup = { x: 2640, y: 880 };
+      const dest = { x: 440, y: 2200 };
+      state.taxi = { state: 'waiting', mission: true, fare: pickup, dest, timer: TAXI.rideTime, pay: 0, cooldown: 0 };
+      setTarget(state, pickup.x, pickup.y, 'Pick up the fare by the casino — bring a car');
+      setDialog(state, [
+        'MARA: A high roller needs a ride across the bay. You are the taxi tonight.',
+        'Get a car, pick them up with E, and make the pier road in 60 seconds.',
+      ]);
+    },
+    update(state, dt) {
+      const taxi = state.taxi;
+      const p = state.player;
+      if (state.mission.phase === 0) {
+        if (taxi.state === 'riding') {
+          state.mission.phase = 1;
+          setTarget(state, taxi.dest.x, taxi.dest.y, 'Drop the fare at the pier road — ' + Math.max(0, Math.ceil(taxi.timer)) + 's');
+        } else {
+          setTarget(state, taxi.fare.x, taxi.fare.y, 'Pick up the fare by the casino — bring a car');
+          if (!p.inCar) state.mission.text = 'Pick up the fare by the casino — bring a car';
+        }
+        return false;
+      }
+      if (taxi.state === 'done') return true;
+      if (taxi.state === 'failed') {
+        setDialog(state, ['MARA: The fare walked. Again — the clock resets, the casino waits.']);
+        startMission(state, state.mission.index);
+        return false;
+      }
+      state.mission.text = 'Drop the fare at the pier road — ' + Math.max(0, Math.ceil(taxi.timer)) + 's';
+      setTarget(state, taxi.dest.x, taxi.dest.y, state.mission.text);
+      return false;
+    },
+    reward: 500,
+    doneLine: 'FARE: Worth every cent. $500 — Mara says one job left, and it is the big one.',
+  },
+  {
+    title: "The Tide's End",
+    setup(state) {
+      const c = state.city.dealPlaza;
+      state.mission.phase = 0;
+      setTarget(state, c.x, c.y, 'Reach the plaza — end the Tide crew');
+      setDialog(state, [
+        'MARA: Last job. The Tide crew is at the plaza, and they brought everyone.',
+        'Take them all down, grab the ledger, then run — five stars will be on you.',
+      ]);
+      spawnThug(state, c.x - 90, c.y - 60);
+      spawnThug(state, c.x + 80, c.y - 40);
+      spawnThug(state, c.x + 20, c.y + 90);
+      state.mission.count = 3;
+    },
+    update(state, dt) {
+      const p = state.player;
+      const c = state.city.dealPlaza;
+      if (state.mission.phase === 0 || state.mission.phase === 1) {
+        const alive = state.enemies.filter((e) => e.hp > 0).length;
+        state.mission.count = alive;
+        if (alive > 0) {
+          state.mission.text = 'Stop the Tide crew — ' + alive + ' left';
+          return false;
+        }
+        if (state.mission.phase === 0) {
+          state.mission.phase = 1;
+          setDialog(state, ['MARA: More of them — from the side streets!']);
+          spawnThug(state, c.x - 120, c.y + 40);
+          spawnThug(state, c.x + 120, c.y - 60);
+          state.mission.count = 2;
+          return false;
+        }
+        state.mission.phase = 2;
+        setTarget(state, c.x, c.y, 'Grab the ledger at the plaza');
+        setDialog(state, ['JAX: That is all of them. The ledger is on the ground — grab it.']);
+        return false;
+      }
+      if (state.mission.phase === 2) {
+        state.mission.text = 'Grab the ledger at the plaza';
+        if (dist2(p.x, p.y, c.x, c.y) < 70 * 70) {
+          state.mission.phase = 3;
+          p.wanted = 5;
+          p.quietT = 0;
+          setTarget(state, state.city.safehouse.x, state.city.safehouse.y, 'Escape to the safehouse — 5 stars!');
+          setDialog(state, ['MARA: Five stars — helicopter and all! Get to the safehouse, Rook!']);
+        }
+        return false;
+      }
+      state.mission.text = 'Escape to the safehouse — 5 stars!';
+      if (dist2(p.x, p.y, state.mission.target.x, state.mission.target.y) < 90 * 90) return true;
+      return false;
+    },
+    reward: 800,
     doneLine: 'MARA: Debt cleared. Neon Bay is yours now, Rook. Free roam — the city is open.',
   },
 ];

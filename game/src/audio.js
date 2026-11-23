@@ -75,8 +75,12 @@ export function createAudio() {
 
   // Bass line over Am – F – C – G, one bar each, 8th notes at 100 BPM.
   const BASS = [55, 55, 65.41, 55, 55, 65.41, 55, 82.41, 43.65, 43.65, 52, 43.65, 43.65, 52, 43.65, 65.41, 65.41, 65.41, 78.46, 65.41, 65.41, 78.46, 65.41, 82.41, 49, 49, 58.27, 49, 49, 58.27, 49, 73.42];
+  // Track two: the same groove over Dm – Bb – F – C, for the radio key (T).
+  const BASS2 = [73.42, 73.42, 87.31, 73.42, 73.42, 87.31, 73.42, 110, 58.27, 58.27, 69.3, 58.27, 58.27, 69.3, 58.27, 87.31, 87.31, 87.31, 104.65, 87.31, 87.31, 104.65, 87.31, 110, 65.41, 65.41, 77.78, 65.41, 65.41, 77.78, 65.41, 98];
+  const PADS = [[220, 261.63, 329.63], [146.83, 174.61, 220]];
   const STEP_SEC = 0.3;
   let musicStep = 0;
+  let musicTrack = 0;
   let nextTime = 0;
 
   function scheduleMusic() {
@@ -84,7 +88,7 @@ export function createAudio() {
     while (nextTime < ctx.currentTime + 0.4) {
       const step = musicStep % 32;
       const when = Math.max(nextTime, ctx.currentTime);
-      const bass = BASS[step];
+      const bass = (musicTrack === 0 ? BASS : BASS2)[step];
       const osc = ctx.createOscillator();
       osc.type = 'square';
       osc.frequency.value = bass;
@@ -115,7 +119,7 @@ export function createAudio() {
         hat.start(when);
       }
       if (step === 0 || step === 8 || step === 16 || step === 24) {
-        const padNotes = [220, 261.63, 329.63];
+        const padNotes = PADS[musicTrack];
         for (let i = 0; i < padNotes.length; i += 1) {
           const pad = ctx.createOscillator();
           pad.type = 'sawtooth';
@@ -189,6 +193,25 @@ export function createAudio() {
     click() {
       if (!ensure()) return;
       blip(880, 0.05, 'sine', 0.15);
+    },
+    /** Car horn: two short blasts that scatter nearby pedestrians. */
+    horn() {
+      if (!ensure()) return;
+      blip(370, 0.16, 'square', 0.2);
+      window.setTimeout(() => blip(370, 0.14, 'square', 0.18), 170);
+    },
+    /** Neon token pickup: a bright two-note chime. */
+    token() {
+      if (!ensure()) return;
+      blip(880, 0.08, 'sine', 0.22);
+      window.setTimeout(() => blip(1318, 0.14, 'sine', 0.22), 80);
+    },
+    /** Switch the radio between the two synthwave tracks. */
+    nextTrack() {
+      musicTrack = 1 - musicTrack;
+      musicStep = 0;
+      if (!ensure()) return;
+      blip(660, 0.07, 'sine', 0.15);
     },
     reload() {
       if (!ensure()) return;

@@ -5,11 +5,11 @@
 // ?seed=N fixes the city. ?shot=cover|chase|mission|street (with &seed=N) stages
 // that scene instead of running the loop, paints it twice and sets window.__shotReady.
 
-import { VIEW, STEP, SAVE_KEY, CAR, PLAYER, WEAPON, WANTED, POLICE, clamp, dist2, angleTo, angleDiff, angleLerp, lerp } from './config.js';
-import { createState, spawnPlayerCar, collideBuildings, inWater, clampToCity, nearestNode } from './world.js';
-import { createInput, ACTION_CONFIRM, ACTION_PAUSE, ACTION_ENTER, ACTION_RELOAD, ACTION_PUNCH, ACTION_MUTE, ACTION_WEAPON1, ACTION_WEAPON2 } from './input.js';
+import { VIEW, STEP, SAVE_KEY, CAR, PLAYER, WEAPON, WANTED, POLICE, TAXI, TOKENS, clamp, dist2, angleTo, angleDiff, angleLerp, lerp } from './config.js';
+import { createState, spawnPlayerCar, collideBuildings, inWater, clampToCity, nearestNode, randomRoadPoint } from './world.js';
+import { createInput, ACTION_CONFIRM, ACTION_PAUSE, ACTION_ENTER, ACTION_RELOAD, ACTION_PUNCH, ACTION_MUTE, ACTION_WEAPON1, ACTION_WEAPON2, ACTION_HORN, ACTION_RADIO } from './input.js';
 import { createRenderer, SCREEN_TITLE, SCREEN_PLAY, SCREEN_PAUSED, SCREEN_BUSTED, SCREEN_WASTED, SCREEN_END } from './render.js';
-import { updateTraffic, updatePeds, updatePolice, maintainPolice, spawnPolice, scarePeds, nearestStealable, steerToward } from './ai.js';
+import { updateTraffic, updatePeds, updatePolice, maintainPolice, spawnPolice, scarePeds, nearestStealable, steerToward, updateHeli, maintainRoadblocks } from './ai.js';
 import { startMission, updateMission, addWanted, STORY_INTRO, MISSIONS } from './missions.js';
 import { createAudio } from './audio.js';
 import { stageShot } from './shots.js';
@@ -83,6 +83,83 @@ function burst(x, y, n, color, speed) {
   }
 }
 
+/** Taxi fares: the free-roam side job, and the scripted ride of mission 7. */
+function spawnFare(state, pickup, dest, mission) {
+  const d = Math.sqrt(dist2(pickup.x, pickup.y, dest.x, dest.y));
+  const pay = mission ? 0 : Math.min(TAXI.maxPay, TAXI.minPay + Math.floor(d / 100) * 10);
+  state.taxi = { state: 'waiting', mission: !!mission, fare: pickup, dest, timer: TAXI.rideTime, pay, cooldown: 0 };
+}
+
+function spawnRandomFare(state) {
+  const a = randomRoadPoint(state.city, state.rng);
+  let b = randomRoadPoint(state.city, state.rng);
+  let guard = 0;
+  while (dist2(a.x, a.y, b.x, b.y) < 800 * 800 && guard < 8) {
+    b = randomRoadPoint(state.city, state.rng);
+    guard += 1;
+  }
+  spawnFare(state, { x: a.x, y: a.y }, { x: b.x, y: b.y }, false);
+}
+
+function tryTaxiPickup(state) {
+  const taxi = state.taxi;
+  const p = state.player;
+  if (taxi.state !== 'waiting' || !p.inCar) return false;
+  if (dist2(p.x, p.y, taxi.fare.x, taxi.fare.y) > TAXI.pickupRange * TAXI.pickupRange) return false;
+  taxi.state = 'riding';
+  taxi.timer = TAXI.rideTime;
+  audio.pickup();
+  state.dialog.lines = [taxi.mission ? 'FARE: The pier road, driver. And step on it.' : 'FARE: Thanks for stopping. Take me across town, quick.'];
+  state.dialog.i = 0;
+  state.dialog.t = 0;
+  return true;
+}
+
+function updateTaxi(state, dt) {
+  const taxi = state.taxi;
+  if (taxi.state === 'idle' || taxi.state === 'done') {
+    // Free-roam fares only: the story's own taxi job runs mission 7.
+    if (state.mission.storyDone) {
+      taxi.cooldown -= dt;
+      if (taxi.cooldown <= 0) spawnRandomFare(state);
+    }
+    return;
+  }
+  if (taxi.state === 'waiting') return;
+  if (taxi.state !== 'riding') return;
+  taxi.timer -= dt;
+  const p = state.player;
+  if (dist2(p.x, p.y, taxi.dest.x, taxi.dest.y) < TAXI.dropRange * TAXI.dropRange) {
+    if (!taxi.mission && taxi.pay > 0) {
+      p.money += taxi.pay;
+      state.stats.earned += taxi.pay;
+    }
+    taxi.state = 'done';
+    audio.missionDone();
+    state.dialog.lines = [taxi.mission ? 'FARE: Right on time.' : 'FARE: Perfect. Keep the change — $' + taxi.pay + '.'];
+    state.dialog.i = 0;
+    state.dialog.t = 0;
+    if (!taxi.mission) {
+      taxi.cooldown = TAXI.respawnDelay;
+      taxi.state = 'idle';
+      taxi.fare = null;
+      taxi.dest = null;
+    }
+    return;
+  }
+  if (taxi.timer <= 0) {
+    taxi.state = taxi.mission ? 'failed' : 'idle';
+    taxi.cooldown = TAXI.respawnDelay;
+    state.dialog.lines = ['FARE: Too slow — I am walking from here.'];
+    state.dialog.i = 0;
+    state.dialog.t = 0;
+    if (!taxi.mission) {
+      taxi.fare = null;
+      taxi.dest = null;
+    }
+  }
+}
+
 function shake(amount) {
   state.cam.shake = Math.min(16, state.cam.shake + amount);
 }
@@ -127,6 +204,12 @@ function respawn(reason) {
   p.angle = 0;
   state.enemies = [];
   state.bullets = [];
+  if (state.taxi.state === 'riding') {
+    state.taxi.state = 'idle';
+    state.taxi.cooldown = TAXI.respawnDelay;
+    state.taxi.fare = null;
+    state.taxi.dest = null;
+  }
   for (let i = state.cars.length - 1; i >= 0; i -= 1) {
     if (state.cars[i].kind === 'police') state.cars.splice(i, 1);
   }
@@ -255,10 +338,10 @@ function updatePlayer(dt, input) {
     const car = p.inCar;
     const fwd = input.moveY() * -1;
     const steer = input.moveX();
-    if (fwd > 0) car.speed += CAR.accel * dt;
-    else if (fwd < 0) car.speed -= (car.speed > 0 ? CAR.brake : CAR.accel * 0.6) * dt;
+    if (fwd > 0) car.speed += car.acc * dt;
+    else if (fwd < 0) car.speed -= (car.speed > 0 ? CAR.brake : car.acc * 0.6) * dt;
     else car.speed -= Math.sign(car.speed) * Math.min(Math.abs(car.speed), 220 * dt);
-    car.speed = clamp(car.speed, -CAR.reverseMax, CAR.maxSpeed);
+    car.speed = clamp(car.speed, -CAR.reverseMax, car.top);
     const turnRate = CAR.turn * clamp(Math.abs(car.speed) / 220, 0, 1) * (car.speed < 0 ? -1 : 1);
     car.angle += steer * turnRate * dt;
     const nx = car.x + Math.cos(car.angle) * car.speed * dt;
@@ -267,7 +350,7 @@ function updatePlayer(dt, input) {
     if (collideBuildings(city, probe, CAR.radius)) {
       if (Math.abs(car.speed) > 160) {
         damageCar(car, (Math.abs(car.speed) - 160) / 12, car.x, car.y);
-        audio.crash(Math.abs(car.speed) / CAR.maxSpeed);
+        audio.crash(Math.abs(car.speed) / car.top);
         shake(7);
       }
       car.speed *= 0.45;
@@ -351,6 +434,9 @@ function updatePlayer(dt, input) {
 function updateCars(dt) {
   const cars = state.cars;
   for (let i = 0; i < cars.length; i += 1) {
+    if (cars[i].crashCd > 0) cars[i].crashCd -= dt;
+  }
+  for (let i = 0; i < cars.length; i += 1) {
     const a = cars[i];
     if (a.hp <= 0) continue;
     for (let j = i + 1; j < cars.length; j += 1) {
@@ -370,9 +456,11 @@ function updateCars(dt) {
       b.x += nx * push;
       b.y += ny * push;
       const impact = Math.abs(a.speed - b.speed);
-      if (impact > 120) {
+      if (impact > 120 && a.crashCd <= 0 && b.crashCd <= 0) {
         damageCar(a, impact / 40, b.x, b.y);
         damageCar(b, impact / 40, a.x, a.y);
+        a.crashCd = 0.5;
+        b.crashCd = 0.5;
         burst((a.x + b.x) / 2, (a.y + b.y) / 2, 8, '#ffb347', 200);
         audio.crash(impact / 500);
         shake(5);
@@ -388,8 +476,14 @@ function updateCars(dt) {
     if (car.kind !== 'police' || car.hp <= 0) continue;
     const d2 = dist2(car.x, car.y, p.x, p.y);
     if (p.inCar) {
-      if (d2 < (CAR.radius * 2) * (CAR.radius * 2) && Math.abs(car.speed) > 100) {
-        damageCar(p.inCar, Math.abs(car.speed) / 30, car.x, car.y);
+      const pc = p.inCar;
+      // A ram stings but does not shred the car: at /30 a single cruiser
+      // wrecked a sport car in ~2 s of contact, so a steal-and-drive job
+      // (M2) was unwinnable. /60 keeps the chase threatening while the
+      // player still has time to reach the chop shop or lose the tail.
+      if (d2 < (CAR.radius * 2) * (CAR.radius * 2) && Math.abs(car.speed) > 100 && pc.crashCd <= 0) {
+        damageCar(pc, Math.abs(car.speed) / 60, car.x, car.y);
+        if (pc.hp > 0) pc.crashCd = 0.5;
         audio.crash(0.7);
         shake(6);
       }
@@ -521,6 +615,11 @@ function updateWanted(dt) {
       p.quietT = 0;
       p.decayT = 0;
     }
+    // The helicopter never loses sight of the player: no decay while it is up.
+    if (state.heli && state.heli.active) {
+      p.quietT = 0;
+      p.decayT = 0;
+    }
   }
   const anyPolice = state.cars.some((c) => c.kind === 'police' && c.hp > 0);
   audio.siren(anyPolice && p.wanted > 0);
@@ -551,8 +650,14 @@ function updateDialog(dt) {
 
 function updateCamera(dt) {
   const p = state.player;
-  state.cam.x = lerp(state.cam.x, p.x, 1 - Math.pow(0.001, dt));
-  state.cam.y = lerp(state.cam.y, p.y, 1 - Math.pow(0.001, dt));
+  // Look ahead in the driving direction so fast cars do not outrun the view.
+  // The lookahead is generous on purpose: the camera's smoothing lags behind
+  // a fast car, and only a lead bigger than that lag reads as a lead.
+  const lead = p.inCar ? clamp(Math.abs(p.speed) / 545, 0, 1) * 120 : 0;
+  const tx = p.x + Math.cos(p.angle) * lead;
+  const ty = p.y + Math.sin(p.angle) * lead;
+  state.cam.x = lerp(state.cam.x, tx, 1 - Math.pow(0.001, dt));
+  state.cam.y = lerp(state.cam.y, ty, 1 - Math.pow(0.001, dt));
   state.cam.shake = Math.max(0, state.cam.shake - dt * 26);
 }
 
@@ -564,11 +669,16 @@ function stepWorld(dt, input) {
   if (!state.player.inCar) {
     const car = nearestStealable(state, state.player.x, state.player.y, CAR.enterRange);
     if (car) state.prompt = car.kind === 'player' ? 'E — ENTER CAR' : 'E — STEAL CAR';
+  } else if (state.taxi.state === 'waiting' && dist2(state.player.x, state.player.y, state.taxi.fare.x, state.taxi.fare.y) < TAXI.pickupRange * TAXI.pickupRange) {
+    state.prompt = 'E — PICK UP FARE';
   }
   updateTraffic(state, dt);
   updatePeds(state, dt);
   updatePolice(state, dt);
   maintainPolice(state, dt);
+  updateHeli(state, dt);
+  maintainRoadblocks(state, dt);
+  updateTaxi(state, dt);
   updateCars(dt);
   updateBullets(dt);
   updateEnemies(dt);
@@ -590,6 +700,17 @@ function stepWorld(dt, input) {
     saveGame();
   }
   const p = state.player;
+  // Neon tokens: drive or walk over one to pocket $25.
+  for (let i = 0; i < state.tokens.length; i += 1) {
+    const t = state.tokens[i];
+    if (!t.taken && dist2(p.x, p.y, t.x, t.y) < TOKENS.collectRange * TOKENS.collectRange) {
+      t.taken = true;
+      p.money += TOKENS.value;
+      state.stats.earned += TOKENS.value;
+      audio.token();
+      burst(t.x, t.y, 8, '#ffd166', 140);
+    }
+  }
   if (p.hp <= 0) return 'wasted';
   if (p.bustedT > 1.2) return 'busted';
   return null;
@@ -688,9 +809,16 @@ function runGame() {
       return;
     }
     if (screen !== SCREEN_PLAY) return;
+    if (actions & ACTION_HORN) {
+      audio.horn();
+      scarePeds(state, state.player.x, state.player.y, 200);
+    }
+    if (actions & ACTION_RADIO) audio.nextTrack();
     if (actions & ACTION_ENTER) {
       const p = state.player;
-      if (p.inCar) exitCar();
+      if (p.inCar && tryTaxiPickup(state)) {
+        // Picked up the fare; stay in the car.
+      } else if (p.inCar) exitCar();
       else {
         const car = nearestStealable(state, p.x, p.y, CAR.enterRange);
         if (car) enterCar(car);

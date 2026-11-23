@@ -10,6 +10,8 @@ export const ACTION_PUNCH = 16;
 export const ACTION_MUTE = 32;
 export const ACTION_WEAPON1 = 64;
 export const ACTION_WEAPON2 = 128;
+export const ACTION_HORN = 256;
+export const ACTION_RADIO = 512;
 
 const UP = new Set(['ArrowUp', 'KeyW']);
 const DOWN = new Set(['ArrowDown', 'KeyS']);
@@ -45,6 +47,10 @@ export function createInput(canvas) {
       if (!event.repeat) actions |= ACTION_WEAPON1;
     } else if (event.code === 'Digit2') {
       if (!event.repeat) actions |= ACTION_WEAPON2;
+    } else if (event.code === 'KeyH') {
+      if (!event.repeat) actions |= ACTION_HORN;
+    } else if (event.code === 'KeyT') {
+      if (!event.repeat) actions |= ACTION_RADIO;
     }
   });
   window.addEventListener('keyup', (event) => {

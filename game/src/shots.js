@@ -1,12 +1,13 @@
 // Neon Bay screenshot scenes behind ?shot=cover|chase|mission|street.
 // Each one builds the real world from the seed, plays it forward a fixed number
 // of steps with a simple autopilot, and leaves a frame that shows the game at its
-// most complete: driving with traffic, a police chase, a mission in progress, and
-// a street on foot. The same seed always gives the same frame.
+// most complete: driving with traffic, a five-star chase with the helicopter, the
+// finale shootout at the plaza, and a street on foot. The same seed always gives
+// the same frame.
 
 import { STEP, PLAYER, PALETTE, angleTo, dist2 } from './config.js';
 import { nearestNode, neighborsOf, collideBuildings, inWater } from './world.js';
-import { updateTraffic, updatePeds, updatePolice, maintainPolice, steerToward, spawnPolice } from './ai.js';
+import { updateTraffic, updatePeds, updatePolice, maintainPolice, steerToward, spawnPolice, spawnRoadblock, updateHeli, maintainRoadblocks } from './ai.js';
 import { startMission } from './missions.js';
 import { SCREEN_PLAY } from './render.js';
 
@@ -73,6 +74,8 @@ function sim(state, seconds, drive, walkTo) {
     updatePeds(state, STEP);
     updatePolice(state, STEP);
     maintainPolice(state, STEP);
+    updateHeli(state, STEP);
+    maintainRoadblocks(state, STEP);
     separateCars(state);
     state.cam.x = p.x;
     state.cam.y = p.y;
@@ -103,44 +106,46 @@ function putPlayerInCar(state, car, x, y, angle) {
   p.angle = angle;
 }
 
-/** Cover: driving north up Bayfront Ave with the bay on the left and traffic around. */
+/** Cover: driving north up Bayfront Ave with the bay on the left and traffic around.
+ *  A short drive, so the car ends mid-frame instead of clipped at the top edge. */
 function stageCover(state) {
   startMission(state, 0);
   const car = playerCar(state);
-  putPlayerInCar(state, car, 0, 2500, -Math.PI / 2);
-  sim(state, 14, true, null);
+  putPlayerInCar(state, car, 0, 2200, -Math.PI / 2);
+  sim(state, 4, true, null);
   return { screen: SCREEN_PLAY };
 }
 
-/** Chase: three stars, police cars closing in, the getaway in full swing. */
+/** Chase: five stars, the police helicopter overhead, a roadblock ahead. */
 function stageChase(state) {
   startMission(state, 2);
-  state.player.wanted = 3;
-  // The mission text says two stars; this scene runs at three — say so.
-  state.dialog.lines = ['MARA: Three stars, Rook. The whole bay is on you.', 'Lose them in the streets — do not get busted.'];
+  state.player.wanted = 5;
+  // The mission text says two stars; this scene runs at five — say so.
+  state.dialog.lines = ['MARA: Five stars, Rook — helicopter and all. Lose them!', 'Roadblocks ahead. Do not stop — do not get busted.'];
   state.dialog.i = 0;
   state.dialog.t = 0;
   const car = playerCar(state);
   putPlayerInCar(state, car, 880, 2200, 0);
   spawnPolice(state, 500, 2200);
   spawnPolice(state, 880, 1760);
-  spawnPolice(state, 1320, 2200);
+  spawnPolice(state, 1760, 2200);
+  spawnRoadblock(state);
   sim(state, 10, true, null);
   return { screen: SCREEN_PLAY };
 }
 
-/** Mission: on foot at the deal plaza, the Tide crew in sight, objective on the HUD. */
+/** Mission: on foot at the deal plaza for the finale — five Tide crew in sight. */
 function stageMission(state) {
-  startMission(state, 3);
+  startMission(state, 7);
   const p = state.player;
   p.x = 1540;
-  p.y = 1320;
+  p.y = 1380;
   p.angle = Math.PI / 2;
-  sim(state, 6, false, { x: 1540, y: 1500 });
+  sim(state, 4, false, { x: 1540, y: 1500 });
   return { screen: SCREEN_PLAY };
 }
 
-/** Street: on foot by the safehouse, a car to steal, pedestrians on the sidewalk. */
+/** Street: on foot by the safehouse, a car to steal, a token to grab, pedestrians. */
 function stageStreet(state) {
   startMission(state, 0);
   const p = state.player;
@@ -151,6 +156,12 @@ function stageStreet(state) {
     state.peds[i].x = 420 + i * 46;
     state.peds[i].y = 560 + (i % 2) * 40;
     state.peds[i].targetNode = nearestNode(state.city, 880, 560);
+  }
+  // One neon token in the frame, by the sidewalk the player walks.
+  if (state.tokens.length > 0) {
+    state.tokens[0].x = 560;
+    state.tokens[0].y = 620;
+    state.tokens[0].taken = false;
   }
   const car = playerCar(state);
   sim(state, 4, false, { x: car.x, y: car.y });

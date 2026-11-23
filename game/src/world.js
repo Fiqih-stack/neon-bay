@@ -2,10 +2,17 @@
 // Roads run both ways every 440 px; blocks between them hold buildings or small plazas.
 // The bay is west of the first road, with a wooden pier the first mission uses.
 
-import { CITY, CAR, TRAFFIC, PEDS, PALETTE, mulberry32, pick, clamp, dist2 } from './config.js';
+import { CITY, VCLASS, TRAFFIC, PEDS, TOKENS, PALETTE, mulberry32, pick, clamp, dist2 } from './config.js';
 
 const SIGNS = ['NEON', 'PIER 9', 'TACO', 'HOTEL', '24H', 'BAR', 'GYM', 'DISCO', 'RAMEN', 'SURF', 'CASINO', 'MOTEL'];
 let nextCarId = 1;
+
+/** Which part of town a block sits in: bayfront west, casino south-east, downtown else. */
+export function districtOf(i, j) {
+  if (i <= 1) return 'bay';
+  if (i >= 5 && j >= 5) return 'casino';
+  return 'downtown';
+}
 
 export function nodeKey(i, j) {
   return i + ',' + j;
@@ -76,7 +83,8 @@ function buildCity(rng) {
         const y = split ? cy : by + (bh - h) / 2;
         buildings.push({
           x, y, w, h,
-          color: pick(rng, PALETTE.building),
+          color: pick(rng, PALETTE.district[districtOf(i, j)]),
+          district: districtOf(i, j),
           sign: rng() < 0.55 ? pick(rng, SIGNS) : '',
           signColor: pick(rng, PALETTE.neon),
           seed: Math.floor(rng() * 100000),
@@ -115,17 +123,31 @@ export function randomRoadPoint(city, rng) {
   return { x: city.roadsX[road], y: along, angle: rng() < 0.5 ? Math.PI / 2 : -Math.PI / 2 };
 }
 
-export function makeCar(kind, x, y, angle, color) {
+/** A car class for traffic and parked cars: coupes are common, sports are quick, trucks are tough. */
+export function randomVClass(rng) {
+  const r = rng();
+  return r < 0.5 ? 'coupe' : r < 0.75 ? 'sport' : 'truck';
+}
+
+export function makeCar(kind, x, y, angle, color, vclass, rng) {
+  const vc = kind === 'police' ? 'police' : vclass || (rng ? randomVClass(rng) : 'coupe');
+  const spec = kind === 'police' ? { top: 565, acc: 490, hp: 120 } : VCLASS[vc];
   return {
     id: nextCarId,
     kind, x, y, angle,
     speed: 0,
     color,
-    hp: kind === 'police' ? 120 : CAR.hp,
+    vclass: vc,
+    top: spec.top, acc: spec.acc,
+    hp: kind === 'police' ? 120 : spec.hp,
     node: null, prevNode: null, targetNode: null,
     stuckT: 0, siren: kind === 'police', stolen: false,
     occupied: kind === 'traffic',
-    despawnT: 0, brakeLight: false,
+    despawnT: 0, brakeLight: false, block: false, blockAxis: 'h',
+    // Short cooldown after crash damage, so one impact counts once instead of
+    // once per frame while two cars overlap (a head-on used to wreck a car
+    // outright in under a second).
+    crashCd: 0,
   };
 }
 
@@ -179,6 +201,8 @@ export function createState(seed) {
       shootCd: 0, reloadT: 0, punchCd: 0, speed: 0,
     },
     cars: [], peds: [], enemies: [], bullets: [], parts: [],
+    tokens: [], heli: { active: false, x: 0, y: 0, angle: 0 },
+    taxi: { state: 'idle', mission: false, fare: null, dest: null, timer: 0, pay: 0, cooldown: 8 },
     mission: { index: 0, phase: 0, target: null, timer: 0, count: 0, text: '', done: false, storyDone: false },
     dialog: { lines: [], i: 0, t: 0 },
     cam: { x: city.safehouse.x, y: city.safehouse.y, shake: 0 },
@@ -194,7 +218,7 @@ export function createState(seed) {
       spot = randomRoadPoint(city, rng);
       guard += 1;
     }
-    const car = makeCar('traffic', spot.x, spot.y, spot.angle, pick(rng, PALETTE.traffic));
+    const car = makeCar('traffic', spot.x, spot.y, spot.angle, pick(rng, PALETTE.traffic), null, rng);
     car.node = nearestNode(city, spot.x, spot.y);
     car.targetNode = nearestNode(city, spot.x + Math.cos(spot.angle) * 440, spot.y + Math.sin(spot.angle) * 440);
     car.speed = TRAFFIC.speedMin + rng() * (TRAFFIC.speedMax - TRAFFIC.speedMin);
@@ -205,9 +229,17 @@ export function createState(seed) {
     const side = rng() < 0.5 ? 1 : -1;
     const px = spot.x + (spot.angle === 0 || spot.angle === Math.PI ? 0 : side * (CITY.roadW / 2 - 16));
     const py = spot.y + (spot.angle === 0 || spot.angle === Math.PI ? side * (CITY.roadW / 2 - 16) : 0);
-    const car = makeCar('parked', px, py, spot.angle, pick(rng, PALETTE.traffic));
+    const car = makeCar('parked', px, py, spot.angle, pick(rng, PALETTE.traffic), null, rng);
     car.occupied = false;
     state.cars.push(car);
+  }
+  // Neon tokens: glowing pickups on roads and plazas, worth a little cash each.
+  for (let i = 0; i < TOKENS.count; i += 1) {
+    const spot = randomRoadPoint(city, rng);
+    const side = rng() < 0.5 ? 1 : -1;
+    const ox = spot.angle === 0 || spot.angle === Math.PI ? 0 : side * 26;
+    const oy = spot.angle === 0 || spot.angle === Math.PI ? side * 26 : 0;
+    state.tokens.push({ x: spot.x + ox, y: spot.y + oy, taken: false, seed: i });
   }
   for (let i = 0; i < PEDS.count; i += 1) {
     const spot = randomRoadPoint(city, rng);
@@ -220,9 +252,13 @@ export function createState(seed) {
   return state;
 }
 
-/** The player's own first car: a teal coupe parked on the road by the safehouse. */
+/** The player's own first car: a teal coupe parked on the road by the safehouse.
+ *  It is kind 'player', so climbing into your own car is never a crime. It faces
+ *  south, out toward the city and the pier, so the first drive is a straight road
+ *  instead of a U-turn into the north edge. It sits on the road centre, clear of
+ *  the buildings on either side. */
 export function spawnPlayerCar(state) {
-  const car = makeCar('parked', state.city.safehouse.x + 30, state.city.safehouse.y - 110, -Math.PI / 2, PALETTE.playerCar);
+  const car = makeCar('player', state.city.safehouse.x, state.city.safehouse.y - 110, Math.PI / 2, PALETTE.playerCar, 'coupe');
   car.occupied = false;
   state.cars.push(car);
   return car;

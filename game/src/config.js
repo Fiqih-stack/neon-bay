@@ -37,9 +37,24 @@ export const CAR = {
   enterRange: 78,
 };
 
+/** Vehicle classes: same arcade feel, different top speed, punch and size. */
+export const VCLASS = {
+  coupe: { top: 545, acc: 430, hp: 100, len: 44, label: 'coupe' },
+  sport: { top: 640, acc: 520, hp: 80, len: 48, label: 'sport' },
+  truck: { top: 460, acc: 340, hp: 160, len: 54, label: 'truck' },
+};
+
+/** Taxi fares and neon tokens: the free-roam side work. */
+export const TAXI = { rideTime: 60, minPay: 80, maxPay: 160, respawnDelay: 20, pickupRange: 80, dropRange: 90 };
+export const TOKENS = { count: 12, value: 25, collectRange: 32 };
+
+/** A police helicopter joins the chase at five stars; roadblocks at three. */
+export const HELI = { speed: 310, hoverRadius: 130, spawnOffset: 420 };
+export const ROADBLOCK = { minWanted: 3, aheadDist: 620, triggerRange: 140 };
+
 export const TRAFFIC = { count: 14, speedMin: 125, speedMax: 195, hp: 60 };
 export const PEDS = { count: 26, speedMin: 42, speedMax: 78, hp: 40 };
-export const POLICE = { maxSpeed: 565, accel: 490, maxActive: 5, spawnDist: 760, giveUpDist: 980 };
+export const POLICE = { maxSpeed: 565, accel: 490, maxActive: 5, spawnDist: 760, giveUpDist: 980, heliSpawnCd: 1.1 };
 
 export const WEAPON = {
   pistolDamage: 34,
@@ -72,6 +87,12 @@ export const PALETTE = {
   sidewalk: '#3b3b4c',
   block: '#191922',
   building: ['#2e2a4a', '#3d2b4f', '#4a2c3f', '#2b3a52', '#453052'],
+  /** District palettes: bayfront blues, downtown purples, casino golds. */
+  district: {
+    bay: ['#2b4a6b', '#2e5a6b', '#274a5e', '#35586b'],
+    downtown: ['#2e2a4a', '#3d2b4f', '#4a2c3f', '#2b3a52', '#453052'],
+    casino: ['#4a2c5e', '#5e2c4a', '#6b3a2c', '#4a2c6b'],
+  },
   roofLine: '#0f0e16',
   windowLit: '#ffd166',
   windowDark: '#262636',

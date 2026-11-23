@@ -2,7 +2,7 @@
 // and flee from danger, and police cars chase the player and try to ram them.
 // All steering is the same small helper: turn toward a point, gas when aligned.
 
-import { CITY, CAR, TRAFFIC, PEDS, POLICE, PALETTE, angleTo, angleDiff, angleLerp, dist2, clamp, pick } from './config.js';
+import { CITY, CAR, TRAFFIC, PEDS, POLICE, HELI, ROADBLOCK, PALETTE, angleTo, angleDiff, angleLerp, dist2, clamp, pick } from './config.js';
 import { neighborsOf, nearestNode, makeCar, makePed } from './world.js';
 
 function pickNextNode(state, car) {
@@ -59,7 +59,9 @@ export function updateTraffic(state, dt) {
       car.node = car.targetNode;
       car.targetNode = pickNextNode(state, car);
     }
-    const maxSpeed = carAhead(state, car, 95) ? 0 : TRAFFIC.speedMin + 40;
+    // Traffic cruises at its class speed: sports hurry, trucks lumber.
+    const cruise = car.vclass === 'sport' ? 195 : car.vclass === 'truck' ? 135 : TRAFFIC.speedMin + 40;
+    const maxSpeed = carAhead(state, car, 95) ? 0 : cruise;
     steerToward(car, car.targetNode.x, car.targetNode.y, dt, maxSpeed);
     if (car.speed < 12) car.stuckT += dt;
     else car.stuckT = 0;
@@ -139,6 +141,11 @@ export function updatePolice(state, dt) {
     const car = state.cars[i];
     if (car.kind !== 'police' || car.hp <= 0) continue;
     const d = Math.sqrt(dist2(car.x, car.y, px, py));
+    // A roadblock holds its ground until the player gets close — then it joins the chase.
+    if (car.block) {
+      if (d < ROADBLOCK.triggerRange) car.block = false;
+      else continue;
+    }
     // Chase with a little prediction so the ram lands ahead of the player.
     const lead = p.inCar ? 0.35 : 0.1;
     const tx = px + Math.cos(p.angle) * (p.inCar ? p.speed * lead : 0);
@@ -176,12 +183,81 @@ export function maintainPolice(state, dt) {
   state.spawnCd -= dt;
   const want = Math.min(p.wanted + 1, POLICE.maxActive);
   if (state.spawnCd > 0 || policeCount(state) >= want) return;
-  state.spawnCd = 2.2;
+  // With the helicopter up, backup arrives twice as fast.
+  state.spawnCd = state.heli && state.heli.active ? POLICE.heliSpawnCd : 2.2;
   const a = state.rng() * Math.PI * 2;
   const x = p.x + Math.cos(a) * POLICE.spawnDist;
   const y = p.y + Math.sin(a) * POLICE.spawnDist;
   const node = nearestNode(state.city, x, y);
   spawnPolice(state, node.x + (state.rng() - 0.5) * 40, node.y + (state.rng() - 0.5) * 40);
+}
+
+/** The police helicopter: at five stars it circles overhead and never loses the player. */
+export function updateHeli(state, dt) {
+  const p = state.player;
+  const heli = state.heli;
+  if (!heli) return;
+  if (p.wanted < 5) {
+    heli.active = false;
+    return;
+  }
+  if (!heli.active) {
+    heli.active = true;
+    heli.x = p.x + (state.rng() - 0.5) * 200;
+    heli.y = p.y - HELI.spawnOffset;
+    heli.angle = 0;
+  }
+  // Circle the player at a hover radius, spotlight fixed on them.
+  const wantAngle = Math.atan2(p.y - heli.y, p.x - heli.x);
+  const d = Math.sqrt(dist2(heli.x, heli.y, p.x, p.y));
+  const orbit = wantAngle + Math.PI / 2;
+  const tx = p.x + Math.cos(orbit) * HELI.hoverRadius;
+  const ty = p.y + Math.sin(orbit) * HELI.hoverRadius;
+  const step = Math.min(1, (HELI.speed * dt) / Math.max(1, Math.sqrt(dist2(heli.x, heli.y, tx, ty))));
+  heli.x += (tx - heli.x) * step;
+  heli.y += (ty - heli.y) * step;
+  heli.angle = wantAngle;
+  heli.rotor = (heli.rotor || 0) + dt * 30;
+  if (d < 400) state.spawnCd = Math.min(state.spawnCd, POLICE.heliSpawnCd);
+}
+
+/** Two police cars parked across the road ahead of the player, from three stars up.
+ * They are staggered along the road (one at the node, one 90px further on the
+ * opposite side), so the player weaves between them — a slalom, not a wall.
+ * Side by side at one node they left only a 26px gap for a 42px car. */
+export function spawnRoadblock(state) {
+  const p = state.player;
+  const horizontal = Math.abs(Math.cos(p.angle)) > Math.abs(Math.sin(p.angle));
+  const ax = horizontal ? Math.sign(Math.cos(p.angle)) || 1 : 0;
+  const ay = horizontal ? 0 : Math.sign(Math.sin(p.angle)) || 1;
+  const node = nearestNode(state.city, p.x + ax * ROADBLOCK.aheadDist, p.y + ay * ROADBLOCK.aheadDist);
+  const perpX = horizontal ? 0 : 1;
+  const perpY = horizontal ? 1 : 0;
+  for (const [side, along] of [[1, 0], [-1, 90]]) {
+    const car = makeCar('police', node.x + perpX * 34 * side + ax * along, node.y + perpY * 34 * side + ay * along, horizontal ? Math.PI / 2 : 0, PALETTE.policeA);
+    car.block = true;
+    car.blockAxis = horizontal ? 'h' : 'v';
+    car.speed = 0;
+    car.node = node;
+    car.targetNode = node;
+    state.cars.push(car);
+  }
+}
+
+export function maintainRoadblocks(state, dt) {
+  const p = state.player;
+  if (state.roadblockCd === undefined) state.roadblockCd = 0;
+  state.roadblockCd -= dt;
+  const blocks = state.cars.filter((c) => c.block && c.hp > 0);
+  if (p.wanted < ROADBLOCK.minWanted) {
+    for (let i = state.cars.length - 1; i >= 0; i -= 1) {
+      if (state.cars[i].block) state.cars.splice(i, 1);
+    }
+    return;
+  }
+  if (blocks.length > 0 || state.roadblockCd > 0) return;
+  state.roadblockCd = 9;
+  spawnRoadblock(state);
 }
 
 /** Parked cars and the player's own car: the ones the player can climb into. */

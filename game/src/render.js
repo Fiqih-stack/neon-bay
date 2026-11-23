@@ -194,23 +194,35 @@ export function createRenderer(canvas) {
       ctx.restore();
       return;
     }
+    // Vehicle classes read at a glance: sports are long, trucks carry a box.
+    const len = car.vclass === 'sport' ? 48 : car.vclass === 'truck' ? 54 : 44;
+    const half = len / 2;
     ctx.save();
     ctx.translate(car.x, car.y);
     ctx.rotate(car.angle);
     ctx.fillStyle = '#0c0c12';
-    ctx.fillRect(-24, -13, 48, 26);
+    ctx.fillRect(-half - 2, -13, len + 4, 26);
     ctx.fillStyle = car.color;
-    roundRect(-22, -11, 44, 22, 6);
+    roundRect(-half, -11, len, 22, 6);
     ctx.fill();
     ctx.fillStyle = 'rgba(20, 24, 34, 0.9)';
     roundRect(-4, -9, 16, 18, 3);
     ctx.fill();
+    if (car.vclass === 'truck') {
+      ctx.fillStyle = 'rgba(20, 24, 34, 0.75)';
+      roundRect(-half + 2, -9, 14, 18, 2);
+      ctx.fill();
+    }
+    if (car.vclass === 'sport') {
+      ctx.fillStyle = car.color;
+      ctx.fillRect(-half - 3, -10, 4, 20);
+    }
     ctx.fillStyle = 'rgba(180, 220, 255, 0.75)';
-    ctx.fillRect(14, -8, 4, 16);
+    ctx.fillRect(half - 8, -8, 4, 16);
     ctx.fillStyle = '#fff8c0';
     ctx.beginPath();
-    ctx.arc(22, -7, 2.5, 0, Math.PI * 2);
-    ctx.arc(22, 7, 2.5, 0, Math.PI * 2);
+    ctx.arc(half, -7, 2.5, 0, Math.PI * 2);
+    ctx.arc(half, 7, 2.5, 0, Math.PI * 2);
     ctx.fill();
     if (car.kind === 'police') {
       ctx.fillStyle = '#1c1e26';
@@ -278,6 +290,111 @@ export function createRenderer(canvas) {
     ctx.stroke();
   }
 
+  /** Taxi markers: the waiting fare and, once aboard, the drop-off. */
+  function drawTaxi(state, time) {
+    const taxi = state.taxi;
+    if (!taxi || (taxi.state !== 'waiting' && taxi.state !== 'riding')) return;
+    const point = taxi.state === 'waiting' ? taxi.fare : taxi.dest;
+    if (!point) return;
+    const pulse = 1 + Math.sin(time * 5) * 0.15;
+    ctx.save();
+    ctx.translate(point.x, point.y);
+    ctx.rotate(Math.PI / 4);
+    ctx.fillStyle = '#ffd166';
+    ctx.shadowColor = '#ffd166';
+    ctx.shadowBlur = 14;
+    const s = 11 * pulse;
+    ctx.fillRect(-s / 2, -s / 2, s, s);
+    ctx.restore();
+    ctx.font = 'bold 15px ' + FONT;
+    ctx.fillStyle = '#ffd166';
+    ctx.textAlign = 'center';
+    ctx.fillText(taxi.state === 'waiting' ? '$' : '▼', point.x, point.y - 22);
+    if (taxi.state === 'waiting') {
+      // The fare themselves, waiting on the sidewalk.
+      drawPerson(point.x, point.y + 4, 0, '#ffd166', false);
+    }
+  }
+
+  /** Neon tokens: small glowing diamonds worth $25. */
+  function drawTokens(state, time) {
+    for (let i = 0; i < state.tokens.length; i += 1) {
+      const t = state.tokens[i];
+      if (t.taken) continue;
+      const pulse = 1 + Math.sin(time * 4 + t.seed) * 0.2;
+      ctx.save();
+      ctx.translate(t.x, t.y);
+      ctx.rotate(Math.PI / 4);
+      ctx.fillStyle = '#ffd166';
+      ctx.shadowColor = '#ffd166';
+      ctx.shadowBlur = 10;
+      const s = 9 * pulse;
+      ctx.fillRect(-s / 2, -s / 2, s, s);
+      ctx.restore();
+    }
+  }
+
+  /** The police helicopter: dark body, spinning rotor, spotlight on the player. */
+  function drawHeli(state, time) {
+    const heli = state.heli;
+    if (!heli || !heli.active) return;
+    const p = state.player;
+    // Spotlight cone from the helicopter down to the player.
+    ctx.save();
+    ctx.globalAlpha = 0.16;
+    ctx.fillStyle = '#ffe9a8';
+    ctx.beginPath();
+    ctx.moveTo(heli.x, heli.y);
+    ctx.lineTo(p.x - 46, p.y - 30);
+    ctx.lineTo(p.x + 46, p.y + 30);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+    // Ground shadow under the helicopter.
+    ctx.save();
+    ctx.globalAlpha = 0.35;
+    ctx.fillStyle = '#000000';
+    ctx.beginPath();
+    ctx.ellipse(heli.x, heli.y + 26, 30, 10, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+    ctx.save();
+    ctx.translate(heli.x, heli.y);
+    ctx.rotate(heli.angle);
+    ctx.fillStyle = '#1c1e26';
+    ctx.beginPath();
+    ctx.ellipse(0, 0, 26, 12, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#e8ecf4';
+    ctx.beginPath();
+    ctx.arc(14, 0, 6, 0, Math.PI * 2);
+    ctx.fill();
+    const r = (heli.rotor || 0) % (Math.PI * 2);
+    ctx.strokeStyle = 'rgba(232, 236, 244, 0.8)';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(Math.cos(r) * -34, Math.sin(r) * -34);
+    ctx.lineTo(Math.cos(r) * 34, Math.sin(r) * 34);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  /** Striped barriers across the road where a roadblock holds. */
+  function drawRoadblocks(state) {
+    for (let i = 0; i < state.cars.length; i += 1) {
+      const car = state.cars[i];
+      if (!car.block || car.hp <= 0) continue;
+      ctx.save();
+      ctx.translate(car.x, car.y);
+      if (car.blockAxis === 'h') ctx.rotate(Math.PI / 2);
+      for (let s = -1; s <= 1; s += 2) {
+        ctx.fillStyle = s < 0 ? '#ff7a1a' : '#f2f4f8';
+        ctx.fillRect(-4, s * 12 - 5, 8, 10);
+      }
+      ctx.restore();
+    }
+  }
+
   function drawWorld(state, time) {
     const cam = state.cam;
     const vx = clamp(cam.x - VIEW.width / 2, state.city.water.x0, state.city.size + 42 - VIEW.width);
@@ -296,6 +413,8 @@ export function createRenderer(canvas) {
     drawRoads(state);
     drawBuildings(state);
     drawMarker(state, time);
+    drawTaxi(state, time);
+    drawTokens(state, time);
     for (let i = 0; i < state.peds.length; i += 1) {
       const ped = state.peds[i];
       if (ped.hp > 0) drawPerson(ped.x, ped.y, ped.angle, ped.color, false);
@@ -307,6 +426,7 @@ export function createRenderer(canvas) {
     for (let i = 0; i < state.cars.length; i += 1) {
       drawCar(state.cars[i], time);
     }
+    drawRoadblocks(state);
     const p = state.player;
     if (!p.inCar && p.hp > 0) drawPerson(p.x, p.y, p.angle, PALETTE.player, p.weapon === 'pistol');
     for (let i = 0; i < state.bullets.length; i += 1) {
@@ -327,6 +447,7 @@ export function createRenderer(canvas) {
       ctx.fill();
     }
     ctx.globalAlpha = 1;
+    drawHeli(state, time);
     ctx.restore();
     return { vx, vy };
   }
@@ -375,6 +496,11 @@ export function createRenderer(canvas) {
       const e = state.enemies[i];
       if (e.hp > 0) dot(e.x, e.y, 2.5, '#ff4757');
     }
+    for (let i = 0; i < state.tokens.length; i += 1) {
+      const t = state.tokens[i];
+      if (!t.taken) dot(t.x, t.y, 1.5, '#ffd166');
+    }
+    if (state.heli && state.heli.active) dot(state.heli.x, state.heli.y, 3.5, '#ff4757');
     const t = state.mission.target;
     if (t && !state.mission.storyDone) {
       ctx.fillStyle = PALETTE.marker;
@@ -417,6 +543,8 @@ export function createRenderer(canvas) {
     roundRect(60, 28, Math.max(0, 200 * (p.hp / 100)), 14, 7);
     ctx.fill();
     text('$' + p.money.toLocaleString('en-US'), 26, 66, 22, PALETTE.gold, 'left', 'bold');
+    const got = state.tokens.filter((t) => t.taken).length;
+    text('◆ ' + got + '/' + state.tokens.length, 236, 66, 15, PALETTE.gold, 'left', 'bold');
     text('WANTED', 26, 88, 13, PALETTE.hudMuted, 'left', 'bold');
     // Wanted stars sit right of the label.
     for (let s = 0; s < 5; s += 1) {
@@ -441,7 +569,7 @@ export function createRenderer(canvas) {
     // Mission banner, bottom centre.
     const m = state.mission;
     if (m.text && !m.storyDone) {
-      const label = 'MISSION ' + (m.index + 1) + '/6 — ' + m.text;
+      const label = 'MISSION ' + (m.index + 1) + '/8 — ' + m.text;
       ctx.font = 'bold 16px ' + FONT;
       const w = ctx.measureText(label).width + 36;
       ctx.fillStyle = PALETTE.hudPanel;
@@ -470,6 +598,23 @@ export function createRenderer(canvas) {
       ctx.fillStyle = '#ffd166';
       ctx.fillRect((VIEW.width - w) / 2 + 12, VIEW.height - 104, 4, 16);
       text(line, (VIEW.width - w) / 2 + 26, VIEW.height - 90, 16, PALETTE.hudText, 'left');
+    }
+    // Taxi fare in progress, above the dialog: time left and the payout.
+    if (state.taxi && state.taxi.state === 'riding') {
+      const label = 'TAXI FARE — ' + Math.max(0, Math.ceil(state.taxi.timer)) + 's left' + (state.taxi.mission ? '' : ' — $' + state.taxi.pay);
+      ctx.font = 'bold 15px ' + FONT;
+      const w = ctx.measureText(label).width + 36;
+      ctx.fillStyle = 'rgba(12, 12, 24, 0.85)';
+      roundRect((VIEW.width - w) / 2, VIEW.height - 168, w, 36, 10);
+      ctx.fill();
+      text(label, VIEW.width / 2, VIEW.height - 144, 15, PALETTE.gold, 'center', 'bold');
+    }
+    // At three stars or more the screen edges throb red with the heat.
+    if (p.wanted >= 3) {
+      const pulse = 0.10 + Math.sin(time * 5) * 0.04;
+      ctx.strokeStyle = 'rgba(255, 71, 87, ' + pulse.toFixed(3) + ')';
+      ctx.lineWidth = 14;
+      ctx.strokeRect(7, 7, VIEW.width - 14, VIEW.height - 14);
     }
   }
 
@@ -556,9 +701,10 @@ export function createRenderer(canvas) {
     text('AN OPEN-WORLD CRIME STORY', VIEW.width / 2, 258, 22, '#ff9ecf', 'center', 'bold');
     ctx.restore();
     const lines = [
-      'Six jobs. One debt. A whole city that never sleeps.',
+      'Eight jobs. One debt. A whole city that never sleeps.',
       'WASD / arrows — walk & drive    E — enter / steal a car    Mouse — aim, click — shoot',
-      'R — reload    Space — punch    1 / 2 — weapons    P — pause    M — mute',
+      'R — reload    Space — punch    H — horn    T — radio    1 / 2 — weapons    P — pause    M — mute',
+      'Taxi fares and neon tokens pay extra once the story is done.',
       saveExists ? 'A saved game is waiting — Continue picks up where you left off.' : 'No saved game yet — New Game starts the story from the pier.',
     ];
     for (let i = 0; i < lines.length; i += 1) {
