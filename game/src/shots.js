@@ -1,181 +1,197 @@
 // Neon Bay screenshot scenes behind ?shot=cover|chase|mission|street.
-// Each one builds the real world from the seed, plays it forward a fixed number
-// of steps with a simple autopilot, and leaves a frame that shows the game at its
-// most complete: driving with traffic, a five-star chase with the helicopter, the
-// finale shootout at the plaza, and a street on foot. The same seed always gives
-// the same frame.
+// Each one builds the real world from the seed, plays it forward a fixed
+// number of steps with a simple autopilot, and leaves a frame that shows
+// the game at its most complete: driving with traffic, a five-star chase
+// with the helicopter, the finale shootout at the plaza, and a street on
+// foot by the safehouse.
 
-import { STEP, PLAYER, PALETTE, angleTo, dist2 } from './config.js';
-import { nearestNode, neighborsOf, collideBuildings, inWater } from './world.js';
-import { updateTraffic, updatePeds, updatePolice, maintainPolice, steerToward, spawnPolice, spawnRoadblock, updateHeli, maintainRoadblocks } from './ai.js';
-import { startMission } from './missions.js';
-import { SCREEN_PLAY } from './render.js';
+import { CITY, bound, steerTo, angleTo } from './config.js';
+import { newGame, spawnOwnCar, nearestNode, adjacent } from './world.js';
+import { openMission } from './missions.js';
+import { runTraffic, strollPeds, huntCops, topUpCops, circleHeli, watchRoadblocks, spawnThug, dropRoadblock, closestStealable } from './ai.js';
 
-/** Push overlapping cars apart so the staged frame never shows cars inside cars. */
-function separateCars(state) {
-  const cars = state.cars;
-  for (let i = 0; i < cars.length; i += 1) {
-    for (let j = i + 1; j < cars.length; j += 1) {
-      const a = cars[i];
-      const b = cars[j];
-      const dx = b.x - a.x;
-      const dy = b.y - a.y;
-      const d2 = dx * dx + dy * dy;
-      if (d2 >= 42 * 42 || d2 < 0.01) continue;
-      const d = Math.sqrt(d2);
-      const push = (42 - d) / 2;
-      a.x -= (dx / d) * push;
-      a.y -= (dy / d) * push;
-      b.x += (dx / d) * push;
-      b.y += (dy / d) * push;
+// One fixed step of the world, without the player: traffic, pedestrians,
+// police, helicopter and roadblocks, in that order.
+function advanceWorld(state, dt) {
+  runTraffic(state, dt);
+  strollPeds(state, dt);
+  huntCops(state, dt);
+  topUpCops(state);
+  circleHeli(state, dt);
+  watchRoadblocks(state);
+  state.time += dt;
+}
+
+// Drive a car along the grid toward a point: pick the neighbouring node
+// that gets closer, steer toward it, and brake for the turn. Returns true
+// once the car is within the radius.
+function driveCarTo(state, car, tx, ty, radius, topSpeed = 300) {
+  const dist = Math.hypot(tx - car.x, ty - car.y);
+  if (dist < radius) return true;
+  const node = nearestNode(state.city, car.x, car.y);
+  const options = adjacent(state.city, node);
+  let best = null;
+  let bestD = Infinity;
+  for (const n of options) {
+    const nd = Math.hypot(n.x - tx, n.y - ty);
+    if (nd < bestD) {
+      bestD = nd;
+      best = n;
     }
   }
+  const target = best || { x: tx, y: ty };
+  const aim = angleTo(car.x, car.y, target.x, target.y);
+  const turn = Math.abs(((aim - car.angle + Math.PI * 3) % (Math.PI * 2)) - Math.PI);
+  const speed = turn > 0.6 ? 120 : topSpeed;
+  car.angle = steerTo(car.angle, aim, 0.12);
+  car.speed = speed;
+  car.x += Math.cos(car.angle) * car.speed * (1 / 60);
+  car.y += Math.sin(car.angle) * car.speed * (1 / 60);
+  return false;
 }
 
-/**
- * Play the world forward. `drive` steers the player's car along the road graph;
- * `walkTo` walks the player on foot toward a point. Traffic, pedestrians and the
- * police all run their real rules while it plays.
- */
-function sim(state, seconds, drive, walkTo) {
-  const steps = Math.floor(seconds / STEP);
-  for (let n = 0; n < steps; n += 1) {
-    state.time += STEP;
-    const p = state.player;
-    if (drive && p.inCar) {
-      const car = p.inCar;
-      if (!car.targetNode) car.targetNode = nearestNode(state.city, car.x, car.y);
-      if (dist2(car.x, car.y, car.targetNode.x, car.targetNode.y) < 40 * 40) {
-        car.prevNode = car.node;
-        car.node = car.targetNode;
-        const opts = neighborsOf(state.city, car.node).filter((node) => !(car.prevNode && node.i === car.prevNode.i && node.j === car.prevNode.j));
-        car.targetNode = opts[Math.floor(state.rng() * opts.length)] || car.node;
-      }
-      steerToward(car, car.targetNode.x, car.targetNode.y, STEP, 430);
-      p.x = car.x;
-      p.y = car.y;
-      p.angle = car.angle;
-      p.speed = car.speed;
-    } else if (walkTo) {
-      const d = Math.sqrt(dist2(p.x, p.y, walkTo.x, walkTo.y));
-      if (d > 60) {
-        const a = angleTo(p.x, p.y, walkTo.x, walkTo.y);
-        p.angle = a;
-        const nx = p.x + Math.cos(a) * PLAYER.walkSpeed * STEP;
-        const ny = p.y + Math.sin(a) * PLAYER.walkSpeed * STEP;
-        const probe = { x: nx, y: ny };
-        if (!collideBuildings(state.city, probe, PLAYER.radius) && !inWater(state.city, probe.x, probe.y)) {
-          p.x = nx;
-          p.y = ny;
-        }
-      }
+// Walk the player toward a point on the grid, one node at a time.
+function walkPlayerTo(state, tx, ty, radius) {
+  const p = state.player;
+  const dist = Math.hypot(tx - p.x, ty - p.y);
+  if (dist < radius) return true;
+  const node = nearestNode(state.city, p.x, p.y);
+  const options = adjacent(state.city, node);
+  let best = null;
+  let bestD = Infinity;
+  for (const n of options) {
+    const nd = Math.hypot(n.x - tx, n.y - ty);
+    if (nd < bestD) {
+      bestD = nd;
+      best = n;
     }
-    updateTraffic(state, STEP);
-    updatePeds(state, STEP);
-    updatePolice(state, STEP);
-    maintainPolice(state, STEP);
-    updateHeli(state, STEP);
-    maintainRoadblocks(state, STEP);
-    separateCars(state);
-    state.cam.x = p.x;
-    state.cam.y = p.y;
   }
+  const target = best || { x: tx, y: ty };
+  const aim = angleTo(p.x, p.y, target.x, target.y);
+  p.angle = steerTo(p.angle, aim, 0.2);
+  p.x += Math.cos(p.angle) * 200 * (1 / 60);
+  p.y += Math.sin(p.angle) * 200 * (1 / 60);
+  return false;
 }
 
-/** The player's teal coupe, parked by the safehouse at the start of every game. */
-function playerCar(state) {
-  for (let i = 0; i < state.cars.length; i += 1) {
-    if (state.cars[i].color === PALETTE.playerCar) return state.cars[i];
-  }
-  return state.cars[0];
-}
-
-function putPlayerInCar(state, car, x, y, angle) {
-  car.x = x;
-  car.y = y;
-  car.angle = angle;
-  car.speed = 0;
-  car.kind = 'player';
-  car.stolen = true;
-  car.node = nearestNode(state.city, x, y);
-  car.targetNode = nearestNode(state.city, x + Math.cos(angle) * 440, y + Math.sin(angle) * 440);
+// Put the player in a car: mark it stolen, count it, and raise the heat by
+// one star, unless it is the player's own coupe.
+function putInCar(state, car) {
   const p = state.player;
   p.inCar = car;
-  p.x = x;
-  p.y = y;
-  p.angle = angle;
+  car.occupied = true;
+  p.x = car.x;
+  p.y = car.y;
+  if (car.kind !== 'player') {
+    car.stolen = true;
+    state.stats.stolen += 1;
+    if (p.wanted < 5) p.wanted += 1;
+  }
 }
 
-/** Cover: driving north up Bayfront Ave with the bay on the left and traffic around.
- *  A short drive, so the car ends mid-frame instead of clipped at the top edge. */
-function stageCover(state) {
-  startMission(state, 0);
-  const car = playerCar(state);
-  putPlayerInCar(state, car, 0, 2200, -Math.PI / 2);
-  sim(state, 4, true, null);
-  return { screen: SCREEN_PLAY };
+// Keep the camera on the player, with a lookahead in the driving direction.
+function followCam(state) {
+  const p = state.player;
+  const look = p.inCar ? 120 : 40;
+  state.cam.x = p.x + Math.cos(p.angle) * look;
+  state.cam.y = p.y + Math.sin(p.angle) * look;
 }
 
-/** Chase: five stars, the police helicopter overhead, a roadblock ahead. */
-function stageChase(state) {
-  startMission(state, 2);
+// --- Scenes --------------------------------------------------------------------
+// Cover: the teal coupe driving north up Bayfront Ave, the bay glittering
+// on the left, traffic all around, the first mission banner on the HUD.
+function coverShot(state) {
+  const car = spawnOwnCar(state);
+  // Start on the road by the pier and drive north up Bayfront Ave, so the
+  // bay stays glittering on the left of the frame for the whole shot.
+  car.x = 440;
+  car.y = 1540;
+  car.angle = -Math.PI / 2;
+  putInCar(state, car);
+  openMission(state, 0);
+  for (let i = 0; i < 240; i += 1) {
+    driveCarTo(state, car, car.x, 0, 60, 320);
+    advanceWorld(state, 1 / 60);
+    followCam(state);
+  }
+  state.cam.x = car.x + 120;
+  state.cam.y = car.y - 60;
+}
+
+// Chase: five wanted stars, the helicopter circling overhead, a roadblock
+// across the road ahead, the getaway at full speed.
+function chaseShot(state) {
+  const car = spawnOwnCar(state);
+  putInCar(state, car);
+  openMission(state, 2);
+  // openMission's begin() sets the heat to 2; the chase needs five stars,
+  // so the wanted level goes up after the mission starts.
   state.player.wanted = 5;
-  // The mission text says two stars; this scene runs at five — say so.
-  state.dialog.lines = ['MARA: Five stars, Rook — helicopter and all. Lose them!', 'Roadblocks ahead. Do not stop — do not get busted.'];
-  state.dialog.i = 0;
-  state.dialog.t = 0;
-  const car = playerCar(state);
-  putPlayerInCar(state, car, 880, 2200, 0);
-  spawnPolice(state, 500, 2200);
-  spawnPolice(state, 880, 1760);
-  spawnPolice(state, 1760, 2200);
-  spawnRoadblock(state);
-  sim(state, 10, true, null);
-  return { screen: SCREEN_PLAY };
+  state.mission.timer = 30;
+  for (let i = 0; i < 300; i += 1) {
+    driveCarTo(state, car, 2640, 2200, 80, 420);
+    advanceWorld(state, 1 / 60);
+    followCam(state);
+  }
+  dropRoadblock(state, state.player);
+  for (let i = 0; i < 60; i += 1) {
+    advanceWorld(state, 1 / 60);
+    followCam(state);
+  }
 }
 
-/** Mission: on foot at the deal plaza for the finale — five Tide crew in sight. */
-function stageMission(state) {
-  startMission(state, 7);
+// Mission: the final stand at the deal plaza — the Tide crew in the open,
+// the objective marker on the HUD.
+function missionShot(state) {
+  openMission(state, 7);
+  const plaza = state.city.dealPlaza;
   const p = state.player;
-  p.x = 1540;
-  p.y = 1380;
+  p.x = plaza.x;
+  p.y = plaza.y + 180;
+  p.angle = -Math.PI / 2;
+  // A stolen car nearby, parked at the plaza edge, for the escape.
+  const car = spawnOwnCar(state);
+  car.x = plaza.x + 140;
+  car.y = plaza.y + 140;
+  for (let i = 0; i < 120; i += 1) {
+    advanceWorld(state, 1 / 60);
+    followCam(state);
+  }
+  state.cam.x = plaza.x;
+  state.cam.y = plaza.y;
+}
+
+// Street: Jax on foot by the safehouse, a parked car waiting to be taken,
+// a neon token on the sidewalk, pedestrians strolling by.
+function streetShot(state) {
+  const p = state.player;
+  p.x = state.city.safehouse.x + 60;
+  p.y = state.city.safehouse.y - 60;
   p.angle = Math.PI / 2;
-  sim(state, 4, false, { x: 1540, y: 1500 });
-  return { screen: SCREEN_PLAY };
-}
-
-/** Street: on foot by the safehouse, a car to steal, a token to grab, pedestrians. */
-function stageStreet(state) {
-  startMission(state, 0);
-  const p = state.player;
-  p.x = 440;
-  p.y = 440;
-  // A few pedestrians strolling the same block, for life in the frame.
-  for (let i = 0; i < 3 && i < state.peds.length; i += 1) {
-    state.peds[i].x = 420 + i * 46;
-    state.peds[i].y = 560 + (i % 2) * 40;
-    state.peds[i].targetNode = nearestNode(state.city, 880, 560);
+  // A parked car close by, so the "E — STEAL CAR" prompt shows.
+  const near = closestStealable(state, p.x, p.y);
+  if (near) {
+    near.x = p.x + 50;
+    near.y = p.y + 20;
   }
-  // One neon token in the frame, by the sidewalk the player walks.
-  if (state.tokens.length > 0) {
-    state.tokens[0].x = 560;
-    state.tokens[0].y = 620;
-    state.tokens[0].taken = false;
+  openMission(state, 1);
+  for (let i = 0; i < 90; i += 1) {
+    advanceWorld(state, 1 / 60);
+    followCam(state);
   }
-  const car = playerCar(state);
-  sim(state, 4, false, { x: car.x, y: car.y });
   state.prompt = 'E — STEAL CAR';
-  return { screen: SCREEN_PLAY };
+  state.cam.x = p.x + 40;
+  state.cam.y = p.y - 20;
 }
 
-/**
- * Set the world to the named scene (cover, chase, mission or street; any other
- * name is the street) and return the screen to draw over it.
- */
-export function stageShot(name, state) {
-  if (name === 'cover') return stageCover(state);
-  if (name === 'chase') return stageChase(state);
-  if (name === 'mission') return stageMission(state);
-  return stageStreet(state);
+export function stageScene(seed, scene) {
+  const state = newGame(seed);
+  state.prompt = '';
+  if (scene === 'cover') coverShot(state);
+  else if (scene === 'chase') chaseShot(state);
+  else if (scene === 'mission') missionShot(state);
+  else if (scene === 'street') streetShot(state);
+  else coverShot(state);
+  window.__shotReady = true;
+  return state;
 }

@@ -1,15 +1,18 @@
-// Neon Bay — a 2D top-down open-world crime game (Node 22, standard library only):
-// the game is this directory's game/ folder, plain static files a desktop browser
-// loads offline (game/index.html and its ES modules, no library and no network
-// request), and the program hands it in. It copies game/ and screenshots/ from
-// beside this file to /output and writes /output/dossier.json, the summary the
-// judge reads, with the vendored make.fun library. Neon Bay is a sunset coastal
-// city: drive and steal cars, outrun the police, run eight story missions for Mara
-// Voss, and clear a $1,500 debt — all drawn on canvas with synthesized sound.
-// Free roam adds taxi fares and neon tokens to collect; at five stars a police
-// helicopter circles overhead and roadblocks cut the streets. Put your 3 or 4
-// PNG or JPEG screenshots in screenshots/ (the first by name is the cover) and
-// run it.
+// Neon Bay — a 2D top-down open-world crime game, handed in by this program
+// (Node 22, standard library only). The game itself is plain static files in
+// this directory's game/ folder: game/index.html and its ES modules, no
+// library, no network request, a desktop browser loads it offline. This
+// program copies game/ and screenshots/ from beside this file to /output and
+// writes /output/dossier.json — the summary the judge reads — with the
+// vendored make.fun library. The game is a sunset coastal city where Jax Rook
+// drives and steals cars, outruns the police, runs eight story missions for
+// Mara Voss and clears a $1,500 debt, all drawn on canvas with synthesized
+// sound. Free roam adds taxi fares and neon tokens; at five stars a police
+// helicopter circles overhead and roadblocks cut the streets. This is the
+// ninth rebuild of the entry: the same eight missions and systems, written
+// out again from the v8 reference after six recordings died mid-build. Put
+// 3 or 4 PNG or JPEG screenshots in screenshots/ (the first by name is the
+// cover) and run it.
 //
 // Serve it locally with `node serve.ts`, then open http://localhost:8080.
 // Outside the grader's container, MAKEFUN_OUTPUT_DIR stands in for /output:

@@ -3,18 +3,39 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Neon Bay — an open-world crime story</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='%68ttp%3A%2F%2Fwww.w3.org%2F2000%2Fsvg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%231a1033'/%3E%3Ccircle cx='16' cy='19' r='7' fill='%2319e3c2'/%3E%3Ccircle cx='16' cy='11' r='4' fill='%23ffd166'/%3E%3C/svg%3E">
+<title>Neon Bay — a 2D open-world crime game</title>
+<link rel="icon" href="data:,">
 <style>
-  html, body { margin: 0; height: 100%; overflow: hidden; background: #1a1033; }
-  #game { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
-  /* Read aloud, never shown: the status line screen readers announce. */
-  #status { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  /* The canvas fills the window; the renderer letterboxes the 1280x720
+     view inside it, so the game looks the same at any window size. */
+  html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    background: #0b0916;
+    overflow: hidden;
+  }
+  #game {
+    display: block;
+    width: 100vw;
+    height: 100vh;
+    touch-action: none;
+    cursor: crosshair;
+  }
+  /* Screen-reader status line: in the page, but never on screen. */
+  #status {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
 </style>
 </head>
 <body>
-<canvas id="game" aria-label="Neon Bay: a 2D top-down open-world crime game. Walk with WASD, drive with E, aim with the mouse. Taxi fares, neon tokens, a police helicopter at five stars. H honks, T switches the radio."></canvas>
-<p id="status" role="status" aria-live="polite"></p>
+<canvas id="game" aria-label="Neon Bay game canvas"></canvas>
+<div id="status" aria-live="polite">Neon Bay. Press Enter or click to start.</div>
 <script type="module" src="./src/main.js"></script>
 </body>
 </html>

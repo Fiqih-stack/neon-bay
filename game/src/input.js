@@ -1,6 +1,7 @@
-// Neon Bay input: keyboard plus mouse. Held keys give movement; one-shot presses
-// (enter a car, reload, punch, pause, confirm, mute, weapon swap) are queued as bit
-// flags and taken once by the loop, so a press between frames is never lost.
+// Neon Bay input: keyboard plus mouse. Held keys drive movement; taps
+// (enter a car, reload, punch, pause, confirm, mute, weapon swap, horn,
+// radio) are queued as bit flags and taken once by the loop, so a press
+// that lands between frames is never lost.
 
 export const ACTION_CONFIRM = 1;
 export const ACTION_PAUSE = 2;
@@ -13,94 +14,114 @@ export const ACTION_WEAPON2 = 128;
 export const ACTION_HORN = 256;
 export const ACTION_RADIO = 512;
 
-const UP = new Set(['ArrowUp', 'KeyW']);
-const DOWN = new Set(['ArrowDown', 'KeyS']);
-const LEFT = new Set(['ArrowLeft', 'KeyA']);
-const RIGHT = new Set(['ArrowRight', 'KeyD']);
-const CONFIRM = new Set(['Enter', 'Space']);
-const PAUSE = new Set(['KeyP', 'Escape']);
+// Which physical key holds which direction.
+const MOVE_KEYS = {
+  ArrowUp: 'up',
+  KeyW: 'up',
+  ArrowDown: 'down',
+  KeyS: 'down',
+  ArrowLeft: 'left',
+  KeyA: 'left',
+  ArrowRight: 'right',
+  KeyD: 'right',
+};
+
+// Which physical key raises which action bit (or bits) on a tap.
+// Space both confirms and punches, so it carries two bits at once.
+const TAP_KEYS = {
+  Enter: ACTION_CONFIRM,
+  Space: ACTION_CONFIRM | ACTION_PUNCH,
+  KeyP: ACTION_PAUSE,
+  Escape: ACTION_PAUSE,
+  KeyE: ACTION_ENTER,
+  KeyR: ACTION_RELOAD,
+  KeyM: ACTION_MUTE,
+  Digit1: ACTION_WEAPON1,
+  Digit2: ACTION_WEAPON2,
+  KeyH: ACTION_HORN,
+  KeyT: ACTION_RADIO,
+};
 
 export function createInput(canvas) {
   const held = new Set();
-  let actions = 0;
+  let queued = 0;
   let mouseX = 0;
   let mouseY = 0;
-  let mouseDown = false;
-  let shootQueued = false;
+  let mouseHeld = false;
+  let clickQueued = false;
 
-  window.addEventListener('keydown', (event) => {
-    if (UP.has(event.code) || DOWN.has(event.code) || LEFT.has(event.code) || RIGHT.has(event.code)) {
-      held.add(event.code);
-      event.preventDefault();
-    } else if (CONFIRM.has(event.code)) {
-      if (!event.repeat) actions |= ACTION_CONFIRM;
-      event.preventDefault();
-    } else if (PAUSE.has(event.code)) {
-      if (!event.repeat) actions |= ACTION_PAUSE;
-    } else if (event.code === 'KeyE') {
-      if (!event.repeat) actions |= ACTION_ENTER;
-    } else if (event.code === 'KeyR') {
-      if (!event.repeat) actions |= ACTION_RELOAD;
-    } else if (event.code === 'KeyM') {
-      if (!event.repeat) actions |= ACTION_MUTE;
-    } else if (event.code === 'Digit1') {
-      if (!event.repeat) actions |= ACTION_WEAPON1;
-    } else if (event.code === 'Digit2') {
-      if (!event.repeat) actions |= ACTION_WEAPON2;
-    } else if (event.code === 'KeyH') {
-      if (!event.repeat) actions |= ACTION_HORN;
-    } else if (event.code === 'KeyT') {
-      if (!event.repeat) actions |= ACTION_RADIO;
+  function keyDown(event) {
+    const dir = MOVE_KEYS[event.code];
+    if (dir !== undefined) {
+      held.add(dir);
+    } else if (!event.repeat) {
+      const bit = TAP_KEYS[event.code];
+      if (bit !== undefined) queued |= bit;
     }
-  });
-  window.addEventListener('keyup', (event) => {
-    held.delete(event.code);
-  });
-  window.addEventListener('blur', () => {
+    // Arrow keys and space would scroll the page; swallow them.
+    if (event.code.startsWith('Arrow') || event.code === 'Space') event.preventDefault();
+  }
+
+  function keyUp(event) {
+    const dir = MOVE_KEYS[event.code];
+    if (dir !== undefined) held.delete(dir);
+  }
+
+  function focusLost() {
     held.clear();
-    mouseDown = false;
-  });
-  canvas.addEventListener('pointermove', (event) => {
-    const rect = canvas.getBoundingClientRect();
-    mouseX = event.clientX - rect.left;
-    mouseY = event.clientY - rect.top;
-  });
-  canvas.addEventListener('pointerdown', (event) => {
-    const rect = canvas.getBoundingClientRect();
-    mouseX = event.clientX - rect.left;
-    mouseY = event.clientY - rect.top;
-    mouseDown = true;
-    shootQueued = true;
-    if (event.button === 0) actions |= ACTION_CONFIRM;
-  });
-  window.addEventListener('pointerup', () => {
-    mouseDown = false;
-  });
+    mouseHeld = false;
+  }
+
+  function trackMouse(event) {
+    const box = canvas.getBoundingClientRect();
+    mouseX = event.clientX - box.left;
+    mouseY = event.clientY - box.top;
+  }
+
+  function pointerDown(event) {
+    trackMouse(event);
+    mouseHeld = true;
+    clickQueued = true;
+    if (event.button === 0) queued |= ACTION_CONFIRM;
+  }
+
+  function pointerUp() {
+    mouseHeld = false;
+  }
+
+  window.addEventListener('keydown', keyDown);
+  window.addEventListener('keyup', keyUp);
+  window.addEventListener('blur', focusLost);
+  canvas.addEventListener('pointermove', trackMouse);
+  canvas.addEventListener('pointerdown', pointerDown);
+  window.addEventListener('pointerup', pointerUp);
   canvas.addEventListener('contextmenu', (event) => event.preventDefault());
 
-  function axis(neg, pos) {
+  // -1, 0 or 1 on an axis: the positive key minus the negative one.
+  function axisOf(neg, pos) {
     return (held.has(pos) ? 1 : 0) - (held.has(neg) ? 1 : 0);
   }
 
   return {
-    /** -1/0/1 for each axis from WASD or the arrow keys. */
     moveX() {
-      return axis('ArrowLeft', 'ArrowRight') || axis('KeyA', 'KeyD');
+      return axisOf('left', 'right');
     },
     moveY() {
-      return axis('ArrowUp', 'ArrowDown') || axis('KeyW', 'KeyS');
+      return axisOf('up', 'down');
     },
     mouse() {
-      return { x: mouseX, y: mouseY, down: mouseDown };
+      return { x: mouseX, y: mouseY, down: mouseHeld };
     },
+    // True once per click: the loop fires one shot, then the flag clears.
     takeShoot() {
-      const shot = shootQueued;
-      shootQueued = false;
+      const shot = clickQueued;
+      clickQueued = false;
       return shot;
     },
+    // Hand over every queued one-shot action and clear the queue.
     takeActions() {
-      const taken = actions;
-      actions = 0;
+      const taken = queued;
+      queued = 0;
       return taken;
     },
   };
